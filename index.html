@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>504 班級智慧看板 (星期模擬版 v22)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Just+Another+Hand&display=swap');
+
+        /* 基礎設定 */
+        body {
+            font-family: "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+            overflow: hidden;
+            background: linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 100%);
+            color: #334155;
+            user-select: none;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        /* 玻璃擬態背景 */
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.1);
+        }
+
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        /* 粉筆字體與黑板 */
+        .chalkboard {
+            background-color: #2c3e50;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4' viewBox='0 0 4 4'%3E%3Cpath fill='%239C92AC' fill-opacity='0.1' d='M1 3h1v1H1V3zm2-2h1v1H3V1z'%3E%3C/path%3E%3C/svg%3E");
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
+            color: #ecf0f1;
+        }
+        .chalk-font {
+            font-family: "KaiTi", "BiauKai", cursive;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+        
+        /* 3D 翻牌動畫 */
+        .perspective-1000 { perspective: 1000px; }
+        .transform-style-3d { transform-style: preserve-3d; }
+        .backface-hidden { backface-visibility: hidden; }
+        .rotate-y-180 { transform: rotateY(180deg); }
+        
+        /* 浮動動畫 */
+        @keyframes float {
+            0% { transform: translateY(0px); }
+            50% { transform: translateY(-5px); }
+            100% { transform: translateY(0px); }
+        }
+        .bg-float { animation: float 6s ease-in-out infinite; }
+
+        /* --- 強力發光特效 (Active Glow) --- */
+        .active-glow {
+            position: relative;
+            z-index: 10;
+            border: 2px solid #3b82f6;
+            background: linear-gradient(90deg, #3b82f6 0%, #2563eb 100%);
+            color: white !important;
+            box-shadow: 0 0 15px rgba(59, 130, 246, 0.5);
+            animation: ripple-pulse 2s infinite;
+        }
+        @keyframes ripple-pulse {
+            0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+            70% { box-shadow: 0 0 0 12px rgba(59, 130, 246, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+        }
+    </style>
+</head>
+<body>
+    <div id="root" class="h-screen w-screen overflow-hidden"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+        // --- 設定與資料 ---
+        // 傳入 day 參數，動態產生當日課表
+        const getDailySchedule = (day) => {
+            // --- 週末判斷 (週六或週日) ---
+            if (day === 0 || day === 6) {
+                return [
+                    { id: 'weekend', type: 'leave', start: '00:00', end: '23:59', label: '🏖️ 週末假期愉快' }
+                ];
+            }
+
+            // 科目表 (週一至週五)
+            const weeklySubjects = {
+                1: ['藝術', '藝術', '國語', '數學', '本土語', '綜合', '自然'], // 週一
+                2: ['數學', '社會', '社會', '國際', '體育', '國語', '英語'], // 週二
+                3: ['彈性', '國語', '探索', '探索'], // 週三 (下午無課)
+                4: ['國語', '音樂', '健康', '體育', '英語', '數學', '綜合'], // 週四
+                5: ['國語', '數學', '自然', '自然', '社會', '社團', '社團'], // 週五
+            };
+
+            const todaySubjects = weeklySubjects[day] || ['科目', '科目', '科目', '科目', '科目', '科目', '科目'];
+
+            // 設定潔牙標題：如果是週二(day===2)，顯示含氟漱口水
+            const brushingLabel = (day === 2) ? '🦷 潔牙+含氟漱口水' : '🦷 潔牙時間';
+
+            // 共同時段 (第一節開始)
+            const commonSlots = [
+                { id: 'prep', type: 'break', start: '08:40', end: '08:45', label: '🔔 準備上課' },
+                { id: 5, type: 'class', start: '08:45', end: '09:25', label: `第一節：${todaySubjects[0]||''}` },
+                { id: 6, type: 'break', start: '09:25', end: '09:35', label: '☕ 下課休息' },
+                { id: 7, type: 'class', start: '09:35', end: '10:15', label: `第二節：${todaySubjects[1]||''}` },
+                { id: 8, type: 'break', start: '10:15', end: '10:30', label: '🏃 大下課' },
+                { id: 9, type: 'class', start: '10:30', end: '11:10', label: `第三節：${todaySubjects[2]||''}` },
+                { id: 10, type: 'break', start: '11:10', end: '11:20', label: '☕ 下課休息' },
+                { id: 11, type: 'class', start: '11:20', end: '12:00', label: `第四節：${todaySubjects[3]||''}` },
+                { id: 12, type: 'lunch', start: '12:00', end: '12:30', label: '🍱 午餐時間' },
+                // 潔牙時段
+                { id: 99, type: 'brushing', start: '12:30', end: '12:35', label: brushingLabel },
+                { id: 13, type: 'nap', start: '12:35', end: '13:10', label: '😴 午休時間' },
+                { id: 14, type: 'break', start: '13:10', end: '13:20', label: '🔔 下課' },
+            ];
+
+            let afternoonSlots = [];
+            
+            // 週三
+            if (day === 3) {
+                 const wedSpecific = [
+                    { id: 12, type: 'lunch', start: '12:00', end: '12:30', label: '🍱 午餐時間' },
+                    { id: 21, type: 'leave', start: '12:50', end: '13:00', label: '🎒 放學' }
+                 ];
+                 const preLunch = commonSlots.filter(s => ['prep', 5, 6, 7, 8, 9, 10, 11].includes(s.id));
+                 return [...getMorningSlots(day), ...preLunch, ...wedSpecific];
+
+            } else {
+                 afternoonSlots = [
+                    { id: 15, type: 'class', start: '13:20', end: '14:00', label: `第五節：${todaySubjects[4]||''}` },
+                    { id: 16, type: 'break', start: '14:00', end: '14:10', label: '☕ 下課休息' },
+                    { id: 17, type: 'class', start: '14:10', end: '14:50', label: `第六節：${todaySubjects[5]||''}` },
+                    { id: 18, type: 'break', start: '14:50', end: '15:00', label: '☕ 下課休息' },
+                    { id: 19, type: 'class', start: '15:00', end: '15:40', label: `第七節：${todaySubjects[6]||''}` },
+                    { id: 20, type: 'break', start: '15:40', end: '15:50', label: '👩‍🏫 導師時間' },
+                    { id: 21, type: 'leave', start: '15:50', end: '16:00', label: '🎒 放學' }
+                ];
+                return [...getMorningSlots(day), ...commonSlots, ...afternoonSlots];
+            }
+        };
+
+        // --- 晨間作息 ---
+        const getMorningSlots = (day) => {
+             if (day === 4) { 
+                // 週四：07:50~08:25 早自修, 08:25~08:40 打掃
+                return [
+                    { id: 'm1', type: 'study', start: '07:50', end: '08:25', label: '📖 早自修' },
+                    { id: 'm2', type: 'clean', start: '08:25', end: '08:40', label: '🧹 打掃時間' }
+                ];
+            } else if (day === 3 || day === 5) { 
+                // 週三、週五：07:50~08:05 打掃, 08:05~08:40 早自修
+                return [
+                    { id: 'm1', type: 'clean', start: '07:50', end: '08:05', label: '🧹 打掃時間' },
+                    { id: 'm2', type: 'study', start: '08:05', end: '08:40', label: '📖 早自修' }
+                ];
+            } else { 
+                // 週一、週二：07:50~08:00 晨讀, 08:00~08:15 打掃, 08:15~08:40 早自修
+                return [
+                    { id: 'm1', type: 'study', start: '07:50', end: '08:00', label: '📖 晨讀時間' },
+                    { id: 'm2', type: 'clean', start: '08:00', end: '08:15', label: '🧹 打掃時間' },
+                    { id: 'm3', type: 'study', start: '08:15', end: '08:40', label: '📖 早自修' }
+                ];
+            }
+        }
+
+        const DEFAULT_REMINDERS = {
+            class: ["📖 上課鐘響，請立即回座","👄 專心聽講，不交頭接耳","✨ 桌面保持整潔","🧘 坐姿端正，抬頭挺胸"],
+            break: ["🚶 走廊不奔跑，輕聲細語","💧 喝水上廁所","🌱 愛惜公物，節約能源","👋 看到師長要問好"],
+            lunch: ["🤫 取餐排隊守秩序","😋 細嚼慢嚥，不交談","🍚 惜食不浪費","🧽 保持桌面整潔"],
+            clean: ["🤝 分工合作，確實打掃","🪑 桌椅靠攏，垃圾分類","🧹 工具歸位，整齊排放"],
+            brushing: ["🎵 配合潔牙歌，仔細刷牙","🦷 內側外側咬合面都要刷","✨ 潔牙後，杯子歸位", "🍶 週二記得使用含氟漱口水"],
+            nap: ["😴 趴下休息，保持安靜", "🔋 閉目養神，下午更有力", "🤫 動作放輕，不影響他人"]
+        };
+
+        const mulberry32 = (a) => {
+            return function() {
+              var t = a += 0x6D2B79F5;
+              t = Math.imul(t ^ (t >>> 15), t | 1);
+              t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+              return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            }
+        }
+
+        const FORTUNE_DB = [
+            { 
+                type: '超大吉', 
+                color: 'bg-gradient-to-br from-yellow-200 to-amber-400 text-amber-900', 
+                icon: '👑', 
+                texts: ['今天你是幸運星！', '做什麼都順利！', '會發生很棒的事！', '走路都有風！'] 
+            },
+            { 
+                type: '大吉', 
+                color: 'bg-gradient-to-br from-red-200 to-red-400 text-red-900', 
+                icon: '🌞', 
+                texts: ['心情愉快的一天。', '諸事皆宜，順心。', '活力滿滿！', '笑容會帶來好運。', '適合幫助別人。'] 
+            },
+            { 
+                type: '中吉', 
+                color: 'bg-gradient-to-br from-orange-200 to-orange-400 text-orange-900', 
+                icon: '⭐', 
+                texts: ['平穩就是福。', '努力會有收穫。', '適合讀書學習。', '和同學相處融洽。', '今天思緒很清晰。'] 
+            },
+            { 
+                type: '小吉', 
+                color: 'bg-gradient-to-br from-green-200 to-green-400 text-green-900', 
+                icon: '🍀', 
+                texts: ['有小小的幸運。', '喝杯水心情好。', '注意腳下安全。', '發現生活小美好。', '適合整理座位。'] 
+            },
+            { 
+                type: '平', 
+                color: 'bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800', 
+                icon: '🍵', 
+                texts: ['心平氣和的一天。', '慢慢來，比較快。', '深呼吸，放輕鬆。', '保持平常心。'] 
+            }
+        ];
+
+        const getFixedDailyFortune = (seatNum) => {
+            const date = new Date();
+            const dateInt = date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
+            
+            let seed = (dateInt * 123456789) + (seatNum * 987654321);
+            seed = seed ^ (seed << 13);
+            seed = seed ^ (seed >>> 17);
+            seed = seed ^ (seed << 5);
+            
+            const rng = mulberry32(seed >>> 0); 
+            const rand = rng(); 
+            
+            let selectedTypeIndex = 0;
+            if (rand < 0.15) selectedTypeIndex = 0;
+            else if (rand < 0.40) selectedTypeIndex = 1; 
+            else if (rand < 0.65) selectedTypeIndex = 2; 
+            else if (rand < 0.85) selectedTypeIndex = 3; 
+            else selectedTypeIndex = 4;
+
+            const fortuneData = FORTUNE_DB[selectedTypeIndex];
+            const textIndex = Math.floor(rng() * fortuneData.texts.length);
+            
+            return {
+                type: fortuneData.type,
+                color: fortuneData.color,
+                icon: fortuneData.icon,
+                desc: fortuneData.texts[textIndex]
+            };
+        };
+
+        const playBeep = (duration = 100) => {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            const ctx = new AudioContext();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            gain.gain.setValueAtTime(0.5, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (duration / 1000));
+            setTimeout(() => { osc.stop(); ctx.close(); }, duration);
+        };
+
+        const formatTime = (date) => {
+            const h = String(date.getHours()).padStart(2, '0');
+            const m = String(date.getMinutes()).padStart(2, '0');
+            const s = String(date.getSeconds()).padStart(2, '0');
+            return `${h}:${m}:${s}`;
+        };
+
+        const App = () => {
+            const [now, setNow] = useState(new Date());
+            const [offset, setOffset] = useState(() => parseInt(localStorage.getItem('clock_offset') || 0, 10));
+            
+            // 新增：模擬星期功能 (預設 'auto')
+            // 'auto', 0(Sun), 1(Mon), ... 6(Sat)
+            const [simulatedDay, setSimulatedDay] = useState(() => {
+                const saved = localStorage.getItem('simulated_day');
+                return saved !== null ? saved : 'auto';
+            });
+
+            const adjustedNow = useMemo(() => new Date(now.getTime() + offset), [now, offset]);
+
+            // 計算「有效」的星期幾 (如果是 auto 就用 adjustedNow，否則用模擬的)
+            const effectiveDay = useMemo(() => {
+                if (simulatedDay === 'auto') return adjustedNow.getDay();
+                return parseInt(simulatedDay, 10);
+            }, [simulatedDay, adjustedNow]);
+
+            // --- 核心修改：使用 useEffect 自動更新課表 ---
+            // 當 effectiveDay 改變時，重新產生課表
+            const [schedule, setSchedule] = useState([]);
+
+            useEffect(() => {
+                const newSchedule = getDailySchedule(effectiveDay);
+                setSchedule(newSchedule);
+            }, [effectiveDay]); // 只要星期變了，課表就會變
+
+            const [reminders, setReminders] = useState(() => {
+                const saved = localStorage.getItem('context_reminders_v2');
+                return saved ? JSON.parse(saved) : DEFAULT_REMINDERS;
+            });
+
+            const [contactFontSize, setContactFontSize] = useState(() => parseInt(localStorage.getItem('contact_font_size') || 48, 10));
+
+            const [cardsOpenState, setCardsOpenState] = useState(() => {
+                const saved = localStorage.getItem('fortune_cards_state_v2');
+                const todayStr = new Date().toDateString();
+                if (saved) {
+                    const data = JSON.parse(saved);
+                    if (data.date === todayStr) return data.openStates;
+                }
+                return {};
+            });
+            
+            const [contactBookContent, setContactBookContent] = useState(() => localStorage.getItem('contact_book') || "");
+            const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+            const [settingsTab, setSettingsTab] = useState('schedule');
+            
+            const [weather, setWeather] = useState({ temp: '--', code: -1, loading: true });
+            const [activeSlotId, setActiveSlotId] = useState(null);
+            const [countDownMode, setCountDownMode] = useState('idle');
+            const [countDownSeconds, setCountDownSeconds] = useState(0);
+            const [countDownLabel, setCountDownLabel] = useState("");
+
+            const itemRefs = useRef({});
+
+            useEffect(() => localStorage.setItem('clock_offset', offset), [offset]);
+            useEffect(() => localStorage.setItem('simulated_day', simulatedDay), [simulatedDay]);
+            useEffect(() => localStorage.setItem('contact_book', contactBookContent), [contactBookContent]);
+            useEffect(() => localStorage.setItem('context_reminders_v2', JSON.stringify(reminders)), [reminders]);
+            useEffect(() => localStorage.setItem('contact_font_size', contactFontSize), [contactFontSize]);
+            
+            useEffect(() => {
+                const todayStr = new Date().toDateString();
+                localStorage.setItem('fortune_cards_state_v2', JSON.stringify({ date: todayStr, openStates: cardsOpenState }));
+            }, [cardsOpenState]);
+
+            useEffect(() => {
+                const timer = setInterval(() => setNow(new Date()), 1000);
+                return () => clearInterval(timer);
+            }, []);
+
+            useEffect(() => {
+                const fetchWeather = async () => {
+                    try {
+                        const res = await fetch('https://api.open-meteo.com/v1/forecast?latitude=24.8138&longitude=120.9675&current=temperature_2m,weather_code&timezone=Asia%2FTaipei');
+                        const data = await res.json();
+                        setWeather({
+                            temp: Math.round(data.current.temperature_2m),
+                            code: data.current.weather_code,
+                            loading: false
+                        });
+                    } catch (error) { setWeather(w => ({ ...w, loading: false })); }
+                };
+                fetchWeather();
+                const wTimer = setInterval(fetchWeather, 1800000);
+                return () => clearInterval(wTimer);
+            }, []);
+
+            const currentSlot = useMemo(() => {
+                const currentMs = adjustedNow.getHours() * 3600000 + adjustedNow.getMinutes() * 60000 + adjustedNow.getSeconds() * 1000;
+                for (let slot of schedule) {
+                    const [sh, sm] = slot.start.split(':').map(Number);
+                    const startMs = sh * 3600000 + sm * 60000;
+                    const [eh, em] = slot.end.split(':').map(Number);
+                    const endMs = eh * 3600000 + em * 60000;
+                    if (currentMs >= startMs && currentMs < endMs) {
+                        return { ...slot, startMs, endMs, durationMs: endMs - startMs, progressMs: currentMs - startMs };
+                    }
+                }
+                return null;
+            }, [adjustedNow, schedule]);
+
+            // 自動捲動與倒數邏輯
+            useEffect(() => {
+                if (!currentSlot) { setActiveSlotId(null); return; }
+                if (currentSlot.id !== activeSlotId) {
+                    setActiveSlotId(currentSlot.id);
+                    
+                    // 自動捲動到當前時段 (使用 nearest 避免捲動整個畫面)
+                    if (itemRefs.current[currentSlot.id]) {
+                        itemRefs.current[currentSlot.id].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    }
+                    
+                    const isJustStarted = currentSlot.progressMs < 90000; // 剛開始 90秒內
+                    
+                    // 潔牙倒數 (12:30 開始)
+                    if (currentSlot.type === 'brushing' || currentSlot.label.includes('潔牙')) {
+                        if (isJustStarted && countDownMode === 'idle') {
+                            const isTuesday = effectiveDay === 2; // 使用 effectiveDay 判斷
+                            setCountDownLabel(isTuesday ? "潔牙 + 含氟漱口水" : "潔牙時間");
+                            startCountdownSequence(300);
+                        }
+                    } else if (currentSlot.type === 'class') {
+                        if (isJustStarted && countDownMode === 'idle') {
+                            setCountDownLabel("上課準備");
+                            startCountdownSequence(60);
+                        }
+                    }
+                }
+            }, [currentSlot, activeSlotId, countDownMode, adjustedNow, effectiveDay]);
+
+            const startCountdownSequence = (seconds) => {
+                setCountDownMode('counting');
+                setCountDownSeconds(seconds);
+            };
+
+            useEffect(() => {
+                let interval;
+                if (countDownMode === 'counting' && countDownSeconds > 0) {
+                    interval = setInterval(() => setCountDownSeconds(p => p - 1), 1000);
+                } else if (countDownMode === 'counting' && countDownSeconds <= 0) {
+                    setCountDownMode('ringing');
+                    playBeep(3000);
+                    setTimeout(() => setCountDownMode('finished'), 3000);
+                    setTimeout(() => setCountDownMode('idle'), 6000);
+                }
+                return () => clearInterval(interval);
+            }, [countDownMode, countDownSeconds]);
+
+            const statusStyle = useMemo(() => {
+                if (!currentSlot) return { bg: 'bg-slate-100', text: 'text-slate-500', label: '下課 / 待機', subLabel: '-- : --', icon: '⏸️' };
+                // 顯示開始~結束時間
+                const subLabel = `${currentSlot.start} ~ ${currentSlot.end}`;
+                let label = `${currentSlot.label}`;
+                let bg = 'bg-blue-50', text = 'text-blue-700', icon='📘';
+                
+                if (currentSlot.type === 'class') {
+                    if ((currentSlot.durationMs - currentSlot.progressMs) < 600000) {
+                         bg = 'bg-orange-50'; text = 'text-orange-700'; icon='⏳';
+                    } else {
+                        bg = 'bg-red-50'; text = 'text-red-700'; icon='📖';
+                    }
+                } else if (currentSlot.type === 'brushing') {
+                     bg = 'bg-purple-50'; text = 'text-purple-700'; icon='🦷';
+                } else if (currentSlot.type === 'lunch' || currentSlot.label.includes("午")) {
+                     bg = 'bg-yellow-50'; text = 'text-yellow-700'; icon='🍱';
+                } else if (currentSlot.type === 'clean') {
+                     bg = 'bg-emerald-50'; text = 'text-emerald-700'; icon='🧹';
+                } else {
+                     bg = 'bg-green-50'; text = 'text-green-700'; icon='⚽';
+                }
+                // 若是週末
+                if (currentSlot.id === 'weekend') {
+                    bg = 'bg-indigo-50'; text = 'text-indigo-700'; icon = '🏖️';
+                }
+                return { bg, text, label, subLabel, icon };
+            }, [currentSlot, adjustedNow]);
+
+            const currentMessage = useMemo(() => {
+                let category = 'break'; 
+                if (currentSlot) {
+                    if (currentSlot.type === 'lunch' || currentSlot.label.includes('餐')) category = 'lunch';
+                    else if (currentSlot.type === 'clean' || currentSlot.label.includes('掃')) category = 'clean';
+                    else if (currentSlot.type === 'brushing' || currentSlot.label.includes('潔牙')) category = 'brushing';
+                    else if (currentSlot.type === 'nap') category = 'nap';
+                    else if (currentSlot.type === 'class') category = 'class';
+                }
+                const messages = reminders[category] || reminders['break'];
+                const idx = Math.floor(adjustedNow.getTime() / 6000) % messages.length;
+                return messages[idx] || "歡迎使用班級看板";
+            }, [adjustedNow, currentSlot, reminders]);
+
+            const handleCardClick = (num) => {
+                const isOpen = cardsOpenState[num];
+                if (!isOpen) {
+                    const fortune = getFixedDailyFortune(num);
+                    if(fortune.type === '大吉' || fortune.type === '超大吉') {
+                        confetti({ particleCount: 80, spread: 60, origin: { y: 0.7 } });
+                    }
+                }
+                setCardsOpenState(prev => ({ ...prev, [num]: !isOpen }));
+            };
+
+            const seatNumbers = Array.from({ length: 26 }, (_, i) => i + 1);
+            const formatCountDown = (sec) => `${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
+
+            return (
+                <div className="flex flex-col h-screen w-screen relative bg-gradient-to-br from-slate-100 to-blue-50 text-slate-800">
+                    
+                    {/* 背景裝飾 */}
+                    <div className="absolute top-[-10%] left-[-10%] w-[40vw] h-[40vw] bg-blue-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 bg-float"></div>
+                    <div className="absolute bottom-[-10%] right-[-10%] w-[40vw] h-[40vw] bg-pink-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 bg-float" style={{animationDelay: '1s'}}></div>
+
+                    {/* 倒數 Modal */}
+                    {countDownMode !== 'idle' && (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-sm">
+                            <div className="flex flex-col items-center justify-center text-white w-full">
+                                {countDownMode === 'counting' && (
+                                    <>
+                                        <div className="text-[5vw] font-bold mb-4 text-yellow-400 tracking-wider">{countDownLabel}</div>
+                                        <div className="text-[30vw] leading-none font-black text-white tabular-nums drop-shadow-[0_0_30px_rgba(255,255,255,0.5)]">
+                                            {formatCountDown(countDownSeconds)}
+                                        </div>
+                                    </>
+                                )}
+                                {(countDownMode === 'ringing' || countDownMode === 'finished') && (
+                                    <div className="text-[20vw] font-bold text-red-500 animate-pulse drop-shadow-[0_0_50px_rgba(239,68,68,0.8)]">時間到</div>
+                                )}
+                                <button onClick={() => setCountDownMode('idle')} className="mt-12 px-12 py-4 text-2xl bg-white/20 hover:bg-white/30 rounded-full text-white border border-white/50 transition backdrop-blur-md">
+                                    關閉提醒
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 設定視窗 */}
+                    {isSettingsOpen && (
+                        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center">
+                            <div className="bg-white rounded-2xl shadow-2xl w-[90vw] max-w-4xl h-[85vh] flex flex-col overflow-hidden animate-[fadeIn_0.3s_ease-out]">
+                                <div className="p-4 border-b flex justify-between items-center bg-slate-50">
+                                    <div className="flex gap-2 p-1 bg-slate-200 rounded-lg">
+                                        <button onClick={()=>setSettingsTab('schedule')} className={`px-4 py-2 rounded-md font-bold transition ${settingsTab==='schedule'?'bg-white shadow text-blue-600':'text-slate-500 hover:text-slate-700'}`}>作息表</button>
+                                        <button onClick={()=>setSettingsTab('reminders')} className={`px-4 py-2 rounded-md font-bold transition ${settingsTab==='reminders'?'bg-white shadow text-orange-600':'text-slate-500 hover:text-slate-700'}`}>小叮嚀</button>
+                                        <button onClick={()=>setSettingsTab('clock')} className={`px-4 py-2 rounded-md font-bold transition ${settingsTab==='clock'?'bg-white shadow text-purple-600':'text-slate-500 hover:text-slate-700'}`}>⏱️ 校時</button>
+                                    </div>
+                                    <button onClick={() => setIsSettingsOpen(false)} className="w-10 h-10 rounded-full hover:bg-red-100 hover:text-red-500 flex items-center justify-center text-2xl transition">✕</button>
+                                </div>
+                                <div className="flex-1 overflow-auto p-6 custom-scrollbar text-lg">
+                                    {settingsTab === 'schedule' ? (
+                                        <div className="space-y-4">
+                                            <div className="flex justify-between items-center bg-blue-50 p-4 rounded-lg border border-blue-100">
+                                                 <span className="text-blue-800 font-bold">💡 修改後即時更新，已自動儲存。</span>
+                                                 {/* 星期模擬器 */}
+                                                 <div className="flex items-center gap-2">
+                                                     <label className="text-sm text-slate-600 font-bold">📅 模擬星期：</label>
+                                                     <select value={simulatedDay} onChange={(e) => setSimulatedDay(e.target.value)} className="bg-white border rounded px-2 py-1 text-sm font-bold text-slate-700 focus:ring-2 focus:ring-blue-300 outline-none">
+                                                         <option value="auto">自動偵測 (今日)</option>
+                                                         <option value="1">週一 (Mon)</option>
+                                                         <option value="2">週二 (Tue)</option>
+                                                         <option value="3">週三 (Wed)</option>
+                                                         <option value="4">週四 (Thu)</option>
+                                                         <option value="5">週五 (Fri)</option>
+                                                         <option value="6">週六 (Sat)</option>
+                                                         <option value="0">週日 (Sun)</option>
+                                                     </select>
+                                                 </div>
+                                            </div>
+                                            {schedule.map((item, index) => (
+                                                <div key={item.id} className="flex gap-3 items-center bg-slate-50 p-3 rounded border hover:border-blue-300 transition">
+                                                    <select value={item.type} onChange={(e)=>{const n=[...schedule];n[index].type=e.target.value;setSchedule(n)}} className="border rounded p-2 bg-white w-28 text-lg">
+                                                        <option value="class">🔴上課</option><option value="break">🔵下課</option><option value="lunch">🍱午餐</option><option value="clean">🧹打掃</option><option value="brushing">🦷潔牙</option><option value="nap">😴午休</option>
+                                                        <option value="leave">🎒放學</option>
+                                                        <option value="study">📖自修</option>
+                                                    </select>
+                                                    <input type="time" value={item.start} onChange={(e)=>{const n=[...schedule];n[index].start=e.target.value;setSchedule(n)}} className="border rounded p-2 text-center w-32 bg-white text-lg" />
+                                                    <span className="text-gray-400">➜</span>
+                                                    <input type="time" value={item.end} onChange={(e)=>{const n=[...schedule];n[index].end=e.target.value;setSchedule(n)}} className="border rounded p-2 text-center w-32 bg-white text-lg" />
+                                                    <input type="text" value={item.label} onChange={(e)=>{const n=[...schedule];n[index].label=e.target.value;setSchedule(n)}} className="border rounded p-2 flex-1 bg-white text-lg" placeholder="事項名稱" />
+                                                    <button onClick={()=>{if(confirm('刪除？'))setSchedule(schedule.filter((_,i)=>i!==index))}} className="p-2 text-red-400 hover:bg-red-50 rounded text-xl">🗑️</button>
+                                                </div>
+                                            ))}
+                                            <button onClick={() => setSchedule([...schedule, {id:Date.now(), type:'class', start:'16:00', end:'16:40', label:'新事項'}])} className="w-full py-4 border-2 border-dashed border-slate-300 text-slate-500 rounded-lg hover:bg-slate-50 hover:border-blue-400 hover:text-blue-500 transition font-bold text-xl">+ 新增時段</button>
+                                        </div>
+                                    ) : settingsTab === 'reminders' ? (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-lg">
+                                            {Object.entries(reminders).map(([key, lines]) => (
+                                                <div key={key} className="p-4 rounded-xl border bg-white shadow-sm">
+                                                    <div className="font-bold mb-2 capitalize text-slate-700 border-b pb-1 text-xl">{key === 'class' ? '上課' : key === 'break' ? '下課' : key === 'lunch' ? '午餐' : key === 'clean' ? '打掃' : key === 'brushing' ? '潔牙' : '午休'}</div>
+                                                    <textarea className="w-full h-40 p-3 text-base border rounded bg-slate-50 focus:ring-2 focus:ring-blue-200 outline-none resize-none leading-relaxed" value={lines.join('\n')} onChange={(e)=>{setReminders({...reminders, [key]: e.target.value.split('\n')})}}></textarea>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="flex flex-col items-center justify-center space-y-8 py-8">
+                                            <div className="text-center">
+                                                <div className="text-slate-500 text-lg font-bold mb-2">目前顯示時間 (已調整)</div>
+                                                <div className="text-6xl font-black text-slate-700 font-mono tracking-wider bg-slate-100 px-8 py-4 rounded-xl shadow-inner">
+                                                    {formatTime(adjustedNow)}
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="bg-purple-50 p-6 rounded-2xl border border-purple-100 w-full max-w-lg">
+                                                <div className="text-center font-bold text-purple-800 mb-4">手動微調</div>
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div className="flex flex-col gap-2">
+                                                        <button onClick={() => setOffset(o => o + 1000)} className="bg-white border hover:bg-purple-100 text-purple-700 font-bold py-3 rounded-lg shadow-sm active:scale-95 transition">＋ 1 秒</button>
+                                                        <button onClick={() => setOffset(o => o - 1000)} className="bg-white border hover:bg-purple-100 text-purple-700 font-bold py-3 rounded-lg shadow-sm active:scale-95 transition">－ 1 秒</button>
+                                                    </div>
+                                                    <div className="flex flex-col gap-2">
+                                                        <button onClick={() => setOffset(o => o + 60000)} className="bg-white border hover:bg-purple-100 text-purple-700 font-bold py-3 rounded-lg shadow-sm active:scale-95 transition">＋ 1 分</button>
+                                                        <button onClick={() => setOffset(o => o - 60000)} className="bg-white border hover:bg-purple-100 text-purple-700 font-bold py-3 rounded-lg shadow-sm active:scale-95 transition">－ 1 分</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="w-full max-w-lg border-t pt-6">
+                                                <button onClick={() => { if(confirm('確定要重置時間，回到網路標準時間嗎？')) setOffset(0); }} className="w-full py-3 bg-slate-200 hover:bg-slate-300 text-slate-600 font-bold rounded-lg transition">
+                                                    ↺ 重置為標準時間
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 頂部 Header */}
+                    <header className="h-[15vh] min-h-[120px] flex items-center px-6 gap-6 relative z-10 pt-4 pb-2">
+                        {/* 左：時間 */}
+                        <div className="glass-panel w-[25%] h-full rounded-2xl flex items-center justify-between px-8 relative group transition-all hover:scale-[1.01]">
+                             <div className="flex flex-col justify-center w-full">
+                                <div className="text-8xl font-black text-slate-700 tabular-nums leading-none tracking-tight -ml-1">
+                                    {formatTime(adjustedNow).split(':').slice(0,2).join(':')}
+                                    <span className="text-4xl text-slate-400 font-medium ml-1 inline-block translate-y-[-1rem]">
+                                        {formatTime(adjustedNow).split(':')[2]}
+                                    </span>
+                                </div>
+                                <div className="text-sm font-bold text-slate-500 uppercase tracking-widest mt-1 text-right w-full pr-2 flex justify-end gap-2 items-center">
+                                    {simulatedDay !== 'auto' && <span className="text-xs bg-amber-200 text-amber-800 px-1 rounded">模擬中</span>}
+                                    <span>{now.getFullYear()}/{now.getMonth()+1}/{now.getDate()}</span>
+                                </div>
+                             </div>
+                             <button onClick={() => setIsSettingsOpen(true)} className="w-12 h-12 rounded-full hover:bg-slate-100 text-slate-300 hover:text-slate-600 transition flex items-center justify-center absolute top-2 right-2 text-2xl">⚙️</button>
+                        </div>
+
+                        {/* 中：主狀態列 (修改：移除 Icon) */}
+                        <div className={`flex-1 h-full rounded-2xl flex flex-col items-center justify-center shadow-lg transition-colors duration-700 relative overflow-hidden ${statusStyle.bg}`}>
+                            <div className="relative z-10 flex flex-col items-center">
+                                {/* 文字加大 */}
+                                <div className={`text-7xl font-black ${statusStyle.text} tracking-wide`}>{statusStyle.label}</div>
+                                {/* 修改：顯示時段區間，而非倒數 */}
+                                <div className={`text-3xl font-bold mt-2 opacity-80 ${statusStyle.text}`}>{statusStyle.subLabel}</div>
+                            </div>
+                        </div>
+
+                        {/* 右：天氣 */}
+                        <div className="glass-panel w-[20%] h-full rounded-2xl flex flex-col items-center justify-center relative">
+                             {weather.loading ? <div className="animate-pulse text-slate-400 text-xl">載入中...</div> : (
+                                 <div className="flex items-center gap-4">
+                                     <div className="text-7xl drop-shadow-md">{weather.code>=0?(['☀️','🌤️','☁️','🌫️'][Math.min(3,weather.code)]||'🌧️'):'--'}</div>
+                                     <div className="flex flex-col">
+                                         <div className="text-6xl font-bold text-slate-700 tabular-nums">{weather.temp}°</div>
+                                         <div className="text-xl font-medium text-slate-500">新竹市</div>
+                                     </div>
+                                 </div>
+                             )}
+                        </div>
+                    </header>
+
+                    {/* 主內容區 */}
+                    <main className="flex-1 flex px-6 pb-6 gap-6 overflow-hidden mt-4">
+                        
+                        {/* 左：課表 (修改：加強 Scroll 容器限制) */}
+                        <div className="w-[25%] glass-panel rounded-2xl flex flex-col overflow-hidden shadow-xl" style={{overscrollBehavior: 'contain'}}>
+                            <div className="p-4 bg-slate-100/50 border-b border-white/50 text-center font-bold text-slate-600 text-xl flex items-center justify-center gap-2">
+                                📅 今日流程 
+                                {simulatedDay !== 'auto' && <span className="text-xs bg-amber-200 text-amber-800 px-1 rounded">週{['日','一','二','三','四','五','六'][effectiveDay]}</span>}
+                            </div>
+                            <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
+                                {schedule.map((slot) => {
+                                    const isCurrent = currentSlot && currentSlot.id === slot.id;
+                                    return (
+                                        <div 
+                                            key={slot.id} 
+                                            ref={el => itemRefs.current[slot.id] = el} 
+                                            className={`
+                                                flex items-center p-3 rounded-xl transition-all duration-500 border
+                                                ${isCurrent 
+                                                    ? 'active-glow bg-gradient-to-r from-blue-500 to-blue-400 text-white shadow-lg' 
+                                                    : 'bg-white/60 border-transparent hover:bg-white text-slate-600 hover:shadow-sm'}
+                                                ${slot.type === 'break' && !isCurrent ? 'opacity-75 grayscale-[0.5]' : ''}
+                                            `}
+                                        >
+                                            <div className="w-16 text-center font-medium text-base leading-tight opacity-90 flex flex-col gap-0.5">
+                                                <span>{slot.start}</span>
+                                                <span className="w-full h-px bg-current opacity-30"></span>
+                                                <span>{slot.end}</span>
+                                            </div>
+                                            <div className="flex-1 pl-4 border-l border-current border-opacity-20 ml-2">
+                                                <div className={`font-bold ${isCurrent ? 'text-2xl' : 'text-xl'}`}>{slot.label}</div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* 中：黑板聯絡簿 */}
+                        <div className="w-[40%] flex flex-col gap-4">
+                            {/* 跑馬燈小叮嚀 */}
+                            <div className="bg-amber-100 rounded-2xl border-2 border-amber-200 p-4 shadow-md flex items-center gap-4 overflow-hidden">
+                                <div className="bg-amber-500 text-white text-base px-3 py-1 rounded font-bold shrink-0">提醒</div>
+                                <div key={currentMessage} className="text-amber-900 font-bold text-2xl animate-[fadeIn_0.5s_ease-out] truncate">{currentMessage}</div>
+                            </div>
+                            
+                            {/* 聯絡簿本體 */}
+                            <div className="flex-1 rounded-2xl p-6 chalkboard border-[12px] border-[#5d4037] shadow-2xl relative flex flex-col">
+                                <div className="flex justify-between items-end border-b border-white/20 pb-3 mb-3">
+                                    {/* 標題區塊：包含標題與日期 */}
+                                    <div className="flex items-baseline gap-4">
+                                        <h2 className="text-3xl text-white/90 chalk-font tracking-widest">📋 聯絡事項</h2>
+                                        {/* 新增：日期與星期顯示在標題右側 */}
+                                        <div className="text-xl text-white/70 chalk-font font-sans">
+                                            {now.getFullYear()}/{now.getMonth()+1}/{now.getDate()} (週{['日','一','二','三','四','五','六'][effectiveDay]})
+                                        </div>
+                                    </div>
+                                    
+                                    {/* 字體大小控制 */}
+                                    <div className="flex items-center gap-2">
+                                        <button 
+                                            onClick={() => setContactFontSize(s => Math.max(24, s - 4))} 
+                                            className="text-white/70 hover:text-white border border-white/30 hover:border-white/80 rounded px-2 py-0.5 text-sm transition font-sans font-bold"
+                                            title="縮小字體"
+                                        >
+                                            A-
+                                        </button>
+                                        <button 
+                                            onClick={() => setContactFontSize(s => Math.min(90, s + 4))} 
+                                            className="text-white/70 hover:text-white border border-white/30 hover:border-white/80 rounded px-2 py-0.5 text-sm transition font-sans font-bold"
+                                            title="放大字體"
+                                        >
+                                            A+
+                                        </button>
+                                    </div>
+                                </div>
+                                <textarea 
+                                    className="w-full h-full bg-transparent resize-none outline-none leading-relaxed chalk-font text-white placeholder-white/30 custom-scrollbar" 
+                                    style={{ fontSize: `${contactFontSize}px` }}
+                                    placeholder="老師在此輸入聯絡事項..." 
+                                    value={contactBookContent} 
+                                    onChange={(e) => setContactBookContent(e.target.value)}
+                                ></textarea>
+                                
+                                {/* 裝飾用的粉筆 */}
+                                <div className="absolute bottom-3 right-5 flex gap-2 pointer-events-none opacity-80">
+                                    <div className="w-10 h-3 bg-white rounded-full shadow rotate-12"></div>
+                                    <div className="w-8 h-3 bg-red-300 rounded-full shadow -rotate-6"></div>
+                                    <div className="w-6 h-3 bg-yellow-300 rounded-full shadow rotate-45"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 右：抽卡遊戲區 (Compact Grid) */}
+                        <div className="w-[35%] glass-panel rounded-2xl flex flex-col overflow-hidden shadow-xl relative">
+                            <div className="p-3 bg-indigo-600 text-white text-center font-bold text-lg shadow-md z-10">
+                                交完所有作業(含聯絡簿)即可抽卡
+                            </div>
+                            
+                            <div className="flex-1 p-3 overflow-hidden bg-slate-50/50">
+                                <div className="grid grid-cols-6 gap-2 h-full content-start">
+                                    {seatNumbers.map(num => {
+                                        const isOpen = cardsOpenState[num];
+                                        const fortune = isOpen ? getFixedDailyFortune(num) : null;
+                                        
+                                        return (
+                                            <div key={num} className="aspect-[3/4] perspective-1000 cursor-pointer group" onClick={() => handleCardClick(num)}>
+                                                <div className={`w-full h-full relative transform-style-3d transition-transform duration-700 ${isOpen ? 'rotate-y-180' : 'group-hover:scale-105'}`}>
+                                                    
+                                                    {/* 正面 (未翻開) */}
+                                                    <div className="absolute inset-0 backface-hidden bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg shadow-md flex items-center justify-center border border-indigo-300/30">
+                                                        <span className="text-xl font-black text-white/30 select-none group-hover:text-white/50 transition">{num}</span>
+                                                    </div>
+                                                    
+                                                    {/* 背面 (已翻開) */}
+                                                    <div className={`absolute inset-0 backface-hidden rotate-y-180 rounded-lg shadow-inner border border-white/50 flex flex-col items-center justify-center p-1 select-none text-center ${fortune ? fortune.color : 'bg-white'}`}>
+                                                        {fortune && (
+                                                            <>
+                                                                <div className="text-xl mb-1 filter drop-shadow-sm">{fortune.icon}</div>
+                                                                <div className="font-bold text-base leading-none mb-1">{fortune.type}</div>
+                                                                <div className="text-[10px] leading-tight opacity-90 px-0.5 mt-0.5 scale-90">{fortune.desc}</div>
+                                                            </>
+                                                        )}
+                                                    </div>
+
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                            <div className="p-2 text-center text-sm font-bold text-slate-400 bg-white/50 border-t">
+                                運勢與籤詩每日固定更新！
+                            </div>
+                        </div>
+
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
